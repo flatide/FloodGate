@@ -1,0 +1,15 @@
+#header
+[
+#end
+#body
+#row delimiter=",\n"
+{
+#column delimiter=", "
+"?TARGET?": $SOURCE$
+#end
+}
+#end
+#end
+#footer
+]
+#end
