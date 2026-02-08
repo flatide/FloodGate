@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+      settings:
+        web-allow-others: true
+  datasource:
+    url: jdbc:h2:file:./data/floodgate;AUTO_SERVER=TRUE
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  sql:
+    init:
+      mode: always
+
+floodgate:
+  config:
+    channel:
+      meta:
+        datasource: meta
+      log:
+        datasource: meta
+        tableForAPI: FG_LOG_API
+        tableForFlow: FG_LOG_FLOW
+      spooling:
+        folder: "./data/spool"
+      payload:
+        folder: "./data/payload"
+    meta:
+      source:
+        tableForAPI: FG_API
+        tableForFlow: FG_FLOW
+        tableForDatasource: FG_DATASOURCE
+        tableForTemplate: FG_TEMPLATE
+    datasource:
+      meta:
+        type: DB
+        url: "jdbc:h2:file:./data/floodgate;AUTO_SERVER=TRUE"
+        user: sa
+        password: ""
+        maxPoolSize: 5
