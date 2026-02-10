@@ -14,4 +14,9 @@ object FloodgateConstants {
     const val CHANNEL_PAYLOAD_FOLDER = "channel.payload.folder"
     const val CHANNEL_LOG_TABLE_FOR_API = "channel.log.tableForAPI"
     const val CHANNEL_LOG_TABLE_FOR_FLOW = "channel.log.tableForFlow"
+
+    const val TRANSFER_BUFFER_QUEUE_CAPACITY = "transfer.bufferQueueCapacity"
+    const val TRANSFER_CHUNK_SIZE = "transfer.chunkSize"
+    const val TRANSFER_MAX_CONCURRENT = "transfer.maxConcurrentTransfers"
+    const val TRANSFER_TIMEOUT_SECONDS = "transfer.timeoutSeconds"
 }

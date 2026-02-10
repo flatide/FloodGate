@@ -345,6 +345,7 @@ textarea.json-editor {
   <button onclick="switchTab('api')">API</button>
   <button onclick="switchTab('flow')">Flow</button>
   <button onclick="switchTab('datasource')">Datasource</button>
+  <button onclick="switchTab('transfer')">Transfer</button>
   <button onclick="switchTab('logs')">Logs</button>
 </nav>
 
@@ -451,6 +452,52 @@ textarea.json-editor {
     </div>
   </div>
 
+  <!-- Transfer -->
+  <div id="tab-transfer" class="tab-content">
+    <div class="card">
+      <h3>File Transfer</h3>
+      <div class="form-group">
+        <label for="transfer-datasource">Datasource</label>
+        <select id="transfer-datasource"><option value="">Loading...</option></select>
+      </div>
+      <div class="form-group">
+        <label for="transfer-file">File</label>
+        <input type="file" id="transfer-file" style="padding:6px 0;">
+      </div>
+      <div class="form-group">
+        <label for="transfer-filename">Remote Filename (optional, defaults to selected file name)</label>
+        <input type="text" id="transfer-filename" placeholder="e.g. data.csv">
+      </div>
+      <div class="btn-group">
+        <button class="btn btn-primary" id="transfer-start-btn" onclick="startTransfer()">Start Transfer</button>
+        <button class="btn btn-danger" id="transfer-cancel-btn" onclick="cancelTransfer()" style="display:none">Cancel</button>
+      </div>
+    </div>
+    <div id="transfer-progress-card" class="card" style="display:none">
+      <h3>Progress</h3>
+      <div style="margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">
+          <span id="transfer-info">0 MB / 0 MB</span>
+          <span id="transfer-rate">0 MB/s</span>
+        </div>
+        <div style="background:var(--border);border-radius:4px;height:20px;overflow:hidden;">
+          <div id="transfer-bar" style="background:var(--accent);height:100%;width:0%;transition:width 0.3s;border-radius:4px;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);margin-top:4px;">
+          <span id="transfer-percent">0%</span>
+          <span id="transfer-status-text">Ready</span>
+        </div>
+      </div>
+    </div>
+    <div id="transfer-active-card" class="card" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3>Active Transfers</h3>
+        <button class="btn btn-outline btn-sm" onclick="loadActiveTransfers()">Refresh</button>
+      </div>
+      <div id="transfer-active-list"></div>
+    </div>
+  </div>
+
   <!-- Logs -->
   <div id="tab-logs" class="tab-content">
     <div class="card">
@@ -518,13 +565,14 @@ function switchTab(name) {
   document.getElementById('tab-' + name).classList.add('active');
   // Find the tab button by matching text
   const tabs = document.querySelectorAll('.tab-bar button');
-  const labels = { pipeline: 'Pipeline', api: 'API', flow: 'Flow', datasource: 'Datasource', logs: 'Logs' };
+  const labels = { pipeline: 'Pipeline', api: 'API', flow: 'Flow', datasource: 'Datasource', transfer: 'Transfer', logs: 'Logs' };
   tabs.forEach(btn => { if (btn.textContent === labels[name]) btn.classList.add('active'); });
   // Load data on tab switch
   const tableMap = { api: 'FG_API', flow: 'FG_FLOW', datasource: 'FG_DATASOURCE' };
   if (tableMap[name]) loadMeta(tableMap[name]);
   if (name === 'logs') loadLogs();
   if (name === 'pipeline') loadApiList();
+  if (name === 'transfer') { loadTransferDatasources(); loadActiveTransfers(); }
 }
 
 function switchLogTab(id, btn) {
@@ -822,6 +870,223 @@ async function showLogDetail(table, id) {
   } catch (e) {
     content.innerHTML = escapeHtml(e.message);
   }
+}
+
+// --- Transfer ---
+let transferWs = null;
+let transferId = null;
+let transferSse = null;
+
+async function loadTransferDatasources() {
+  const sel = document.getElementById('transfer-datasource');
+  try {
+    const list = await apiFetch('/meta/FG_DATASOURCE');
+    sel.innerHTML = '<option value="">-- Select Datasource --</option>';
+    if (Array.isArray(list)) {
+      list.forEach(item => {
+        const id = typeof item === 'object' ? (item.ID || item.id || '') : item;
+        sel.innerHTML += `<option value="${escapeHtml(String(id))}">${escapeHtml(String(id))}</option>`;
+      });
+    }
+  } catch {
+    sel.innerHTML = '<option value="">Failed to load</option>';
+  }
+}
+
+async function loadActiveTransfers() {
+  const card = document.getElementById('transfer-active-card');
+  const container = document.getElementById('transfer-active-list');
+  try {
+    const list = await apiFetch('/transfer/active');
+    if (!Array.isArray(list) || list.length === 0) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = 'block';
+    let html = '<table class="data-table"><thead><tr><th>ID</th><th>File</th><th>Status</th><th>Progress</th></tr></thead><tbody>';
+    list.forEach(t => {
+      const pct = t.percentage || '0.0';
+      const mb = ((t.bytesTransferred || 0) / 1048576).toFixed(1);
+      html += `<tr>
+        <td>${escapeHtml(String(t.transferId).substring(0, 8))}...</td>
+        <td>${escapeHtml(t.filename || '')}</td>
+        <td>${escapeHtml(t.status || '')}</td>
+        <td>${mb} MB (${pct}%)</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch {
+    card.style.display = 'none';
+  }
+}
+
+function startTransfer() {
+  const datasource = document.getElementById('transfer-datasource').value;
+  const fileInput = document.getElementById('transfer-file');
+  const filenameInput = document.getElementById('transfer-filename').value.trim();
+
+  if (!datasource) { alert('Please select a datasource'); return; }
+  if (!fileInput.files || fileInput.files.length === 0) { alert('Please select a file'); return; }
+
+  const file = fileInput.files[0];
+  const filename = filenameInput || file.name;
+  const CHUNK_SIZE = 65536;
+
+  const progressCard = document.getElementById('transfer-progress-card');
+  progressCard.style.display = 'block';
+  document.getElementById('transfer-start-btn').style.display = 'none';
+  document.getElementById('transfer-cancel-btn').style.display = 'inline-flex';
+  updateTransferUI(0, file.size, 0, 'Connecting...');
+
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  transferWs = new WebSocket(`${protocol}//${location.host}/ws/transfer`);
+  transferWs.binaryType = 'arraybuffer';
+
+  transferWs.onopen = function() {
+    transferWs.send(JSON.stringify({
+      action: 'start',
+      datasource: datasource,
+      filename: filename,
+      fileSize: file.size
+    }));
+  };
+
+  transferWs.onmessage = function(event) {
+    const msg = JSON.parse(event.data);
+    if (msg.action === 'ready') {
+      transferId = msg.transferId;
+      updateTransferUI(0, file.size, 0, 'Transferring...');
+      startSSE(transferId, file.size);
+      sendChunks(file, CHUNK_SIZE);
+    } else if (msg.action === 'error') {
+      updateTransferUI(0, file.size, 0, 'Error: ' + msg.message);
+      cleanupTransfer();
+    }
+  };
+
+  transferWs.onerror = function() {
+    updateTransferUI(0, file.size, 0, 'WebSocket error');
+    cleanupTransfer();
+  };
+
+  transferWs.onclose = function() {
+    // 정리는 SSE 또는 에러 핸들러에서 처리
+  };
+}
+
+async function sendChunks(file, chunkSize) {
+  const reader = file.stream().getReader();
+  let buffer = new Uint8Array(0);
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (value) {
+        // buffer에 새 데이터 추가
+        const newBuffer = new Uint8Array(buffer.length + value.length);
+        newBuffer.set(buffer);
+        newBuffer.set(value, buffer.length);
+        buffer = newBuffer;
+      }
+
+      // 청크 크기 단위로 전송
+      while (buffer.length >= chunkSize) {
+        const chunk = buffer.slice(0, chunkSize);
+        buffer = buffer.slice(chunkSize);
+
+        // backpressure: bufferedAmount가 높으면 대기
+        while (transferWs && transferWs.bufferedAmount > chunkSize * 4) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+        if (!transferWs || transferWs.readyState !== WebSocket.OPEN) return;
+        transferWs.send(chunk.buffer);
+      }
+
+      if (done) break;
+    }
+
+    // 남은 데이터 전송
+    if (buffer.length > 0) {
+      while (transferWs && transferWs.bufferedAmount > chunkSize * 4) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      if (transferWs && transferWs.readyState === WebSocket.OPEN) {
+        transferWs.send(buffer.buffer);
+      }
+    }
+
+    // 완료 신호
+    if (transferWs && transferWs.readyState === WebSocket.OPEN) {
+      transferWs.send(JSON.stringify({ action: 'complete' }));
+    }
+  } catch (e) {
+    console.error('Error sending chunks:', e);
+    updateTransferUI(0, file.size, 0, 'Send error: ' + e.message);
+    cleanupTransfer();
+  }
+}
+
+function startSSE(tid, totalBytes) {
+  if (transferSse) { transferSse.close(); transferSse = null; }
+
+  transferSse = new EventSource('/transfer/progress/' + encodeURIComponent(tid));
+
+  transferSse.addEventListener('progress', function(event) {
+    const data = JSON.parse(event.data);
+    const bytes = data.bytesTransferred || 0;
+    const total = data.totalBytes || totalBytes;
+    const bps = data.bytesPerSecond || 0;
+    const status = data.status || '';
+
+    updateTransferUI(bytes, total, bps, status);
+
+    if (status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED') {
+      cleanupTransfer();
+      if (status === 'COMPLETED') {
+        updateTransferUI(bytes, total, bps, 'Completed');
+      } else if (status === 'FAILED') {
+        updateTransferUI(bytes, total, bps, 'Failed: ' + (data.errorMessage || ''));
+      }
+    }
+  });
+
+  transferSse.addEventListener('error', function() {
+    // SSE 연결 끊김 — 무시 (전송은 WS로 계속됨)
+  });
+}
+
+function updateTransferUI(bytes, total, bps, statusText) {
+  const mb = (bytes / 1048576).toFixed(1);
+  const totalMb = (total / 1048576).toFixed(1);
+  const rate = (bps / 1048576).toFixed(1);
+  const pct = total > 0 ? ((bytes / total) * 100).toFixed(1) : '0.0';
+
+  document.getElementById('transfer-info').textContent = mb + ' MB / ' + totalMb + ' MB';
+  document.getElementById('transfer-rate').textContent = rate + ' MB/s';
+  document.getElementById('transfer-bar').style.width = pct + '%';
+  document.getElementById('transfer-percent').textContent = pct + '%';
+  document.getElementById('transfer-status-text').textContent = statusText;
+}
+
+function cancelTransfer() {
+  if (transferWs && transferWs.readyState === WebSocket.OPEN) {
+    transferWs.close();
+  }
+  cleanupTransfer();
+  updateTransferUI(0, 0, 0, 'Cancelled');
+}
+
+function cleanupTransfer() {
+  if (transferSse) { transferSse.close(); transferSse = null; }
+  if (transferWs) {
+    try { transferWs.close(); } catch(e) {}
+    transferWs = null;
+  }
+  transferId = null;
+  document.getElementById('transfer-start-btn').style.display = 'inline-flex';
+  document.getElementById('transfer-cancel-btn').style.display = 'none';
 }
 
 // --- Init ---

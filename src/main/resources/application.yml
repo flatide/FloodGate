@@ -36,6 +36,11 @@ floodgate:
         tableForFlow: FG_FLOW
         tableForDatasource: FG_DATASOURCE
         tableForTemplate: FG_TEMPLATE
+    transfer:
+      bufferQueueCapacity: 32
+      chunkSize: 65536
+      maxConcurrentTransfers: 10
+      timeoutSeconds: 3600
     datasource:
       meta:
         type: DB
